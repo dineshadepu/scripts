@@ -1,0 +1,8 @@
+[package]
+name = "scripts"
+version = "0.1.0"
+authors = ["dineshadepu <adepu.dinesh.a@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+prestige = {path = "../prestige"}

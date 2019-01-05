@@ -1,0 +1,963 @@
+#+startup: hideblocks
+#+startup: overview
+* Rigid bodies
+
+** Theory
+
+*** PMS model
+
+** Benchmark 1
+   As the first benchmark we will simulate collapse of cylinders under
+   gravity in a tank. Taken from cite:zhang-2009-simul-solid paper.
+
+
+*** TODO Governing equations
+    The equations governing the rigid bodies are Euler equations. They are
+
+    $$ m \frac{D\vec{u}}{Dt} = \vec{F}_{ext} + \vec{F}_{body} $$
+
+    $$ I \frac{D\vec{\omega}}{Dt} = \vec{T}_{ext} $$
+
+    where $\vec{F}_{ext}, \vec{T}_{ext}$ composes of forces and torques on the
+    rigid body due to collision with other bodies, walls and also due to
+    interaction with fluid. Where $\vec{u}, \vec{omega}, m, I$ are the
+    translation velocity of center of mass, angular velocity, total mass and
+    moment of inertia of the rigid body.
+
+    In the present case we will only deal with forces due to solid body interaction.
+
+
+*** TODO Details of simulation parameters
+    Solid cylinders are initially piled up as several layers in the left of the
+    acrylic tank. Each cylinder has a diameter of 1.0 cm, and a length of 9.9
+    cm with a density of 2700 kg/m^3 and made of aluminum. The tank is a acrylic
+    resin tank with a length of 26 cm, a width of 10 cm and a height of 26 cm.
+
+    As a table
+
+    #+NAME: tbl:geometry_prameters_benchmark_1
+    | Object    | Material      | Length            | height | density       |
+    |-----------+---------------+-------------------+--------+---------------|
+    | Tank      | Acrylic resin | 26 cm             | 26 cm  | 1051.1 kg/m^3 |
+    |-----------+---------------+-------------------+--------+---------------|
+    | Cylinders | Aluminum      | 1.0 cm (diameter) | -      | 2700 kg/m^3   |
+
+*** TODO Implementation in Prestige
+
+**** TODO Single bouncing body (SBB)
+     Before we proceed to simulate the collapse of six layer cylinder simulation,
+     lets first have an understanding of how to simulate rigid bodies in
+     [[https://github.com/dineshadepu/prestige][Prestige]], with a single rigid body falling in a tank. The following will be
+     the order
+
+     - Create particles
+
+     - Setup the initial conditions
+
+     - Create nnps
+
+     - Setup interaction equations
+
+     - Dump data
+
+     Full code is at ref:code:sbb_full. We will go step by step.
+
+     Create a single cylinder, specification as in the table
+     ref:tbl:geometry_prameters_benchmark_1 and a tank. To create a geometry we
+     use [[https://crates.io/crates/simple_shapes][simple_shapes]] crate. It is better to check it out from [[https://github.com/dineshadepu/simple_shapes][github]] for
+     more functions.
+
+     #+NAME: code:create_particles_SBB
+     #+BEGIN_SRC rust
+use simple_shapes::{circle_2d, tank_2d};
+
+fn create_paricles_ssb(spacing: f32) -> (Vec<f32>, Vec<f32>,
+                                         Vec<f32>, Vec<f32>) {
+    // fix the spacing between the particles
+    let layers = 1;
+    // create a tank with 26 cm length, 26 cm height
+    let (xt, yt) = tank_2d(0.0, 0.26, spacing, 0.0, 0.26, spacing, 1, false);
+    // create a cylinder in 2d (that would be a circle),
+    let diameter = 0.01; // in meters
+    let (xc, yc) = circle_2d((0.1, 0.1), diameter / 2., spacing);
+    (xt, yt, xc, yc)
+}
+     #+END_SRC
+
+     Please refer to the [[https://docs.rs/simple_shapes/][documentation]] for functions regarding the geometry
+     creation. Using the particle position information create the rigid body
+     entities and set the initial conditions.
+
+     #+BEGIN_SRC rust
+use prestige::physics::rigid_body::RB3d;
+
+fn create_entites(){
+    let spacing = 0.01;
+    let (xt, yt, xc, yc) = create_partices_ssb(0.01);
+    let mut cube = RB3d::from_xyr(xc.clone(), yc, vec![spacing/2.; xc.len()]);
+    let mut tank = RB3d::from_xyr(xt.clone(), yt, vec![spacing/2.; xt.len()]);
+}
+     #+END_SRC
+
+     After creating entities we need to set it's initial conditions. Before
+     moving on to setup the initial conditions make sure that the entity
+     satisfies the clean condition ref:sec:clean_condition, which will make our simulations go
+     smooth. While setting the initial conditions we will compute the total
+     mass, center of mass, moment of inertia. In computation of moment of
+     inertia we will setup its orientation as an Identity matrix. All these
+     things can be done separately by
+
+     #+BEGIN_SRC rust
+fn create_entites(){
+    // elided
+    cube.compute_total_mass();
+    cube.compute_center_of_mass();
+    cube.compute_moment_of_inertia();
+    cube.save_initial_position_vectors();
+}
+     #+END_SRC
+
+     *note* that the order matters (they are interdependent), or in a single function
+
+     #+BEGIN_SRC rust
+fn create_entites(){
+    // elided
+    cube.initialize();
+}
+     #+END_SRC
+     We can do the same for the tank, but tank doesn't move or is steady so we
+     don't care about its dynamics.
+
+     Setup nnps for neighbours. From the geometry of our simulation we know the
+     bounds of the world. Using that information create the bounds.
+
+     #+BEGIN_SRC rust
+use prestige::contact_search::{WorldBounds, NNPS}
+fn create_bounds(){
+    // setup nnps
+    // bodies out side the domain are no more considered for physics.
+    // in the current case tank will be the bound since no cylinder is allowed
+    // to go past the tank
+    // Using the tank bounds create the world
+    let world_bounds = WorldBounds::new(-0.01, 0.3, -0.01, 0.3, 0.0, 0.0, 0.001);
+    let mut nnps = NNPS::new(2, &world_bounds, dim);
+}
+     #+END_SRC
+     Please refer to the Prestige documentation regarding the functionality of
+     =Worldbounds= and =NNPS=. In rust we can always get the documentation of
+     the crate by the shell command, provided you are in the correct repo.
+
+     #+BEGIN_SRC sh
+cargo doc --open
+     #+END_SRC
+
+     After setting up the nnps, lets move to start simulation. Depending on the
+     time step and total time we can execute the loop as
+
+     #+BEGIN_SRC rust
+fn main(){
+    // elided
+    let dt = 1e-4;
+    let mut t = 0.;
+    let tf = 1.;
+    while t < tf {
+        // --------------------
+        // elided
+        // --------------------
+        step_no += 1;
+        t += dt;
+    }
+}
+     #+END_SRC
+     In the simulation loop, we need to find the forces on the objects at every
+     time step, then compute the accelerations of the particles and move them to
+     next time step. Before computing the forces we need to update the nnps,
+     since the particles will move to the new positions, the indices of the
+     particles in the nnps must be updated to get the nearest neighbours. This
+     can be done by
+
+     #+BEGIN_SRC rust
+fn main(){
+    // elided
+    while t < tf {
+        // --------------------
+        // elided
+        // --------------------
+        stash_3d(vec![&body, &tank], &mut nnps);
+        // elided
+    }
+}
+     #+END_SRC
+
+
+     In order to compute the forces on the rigid body due to the neighbours
+     interaction, as in the present example we have force on the cylinder due to
+     tank. Tank will apply force on the cylinder. This can be computed by
+
+     #+BEGIN_SRC rust
+fn main(){
+    // elided
+    while t < tf {
+        // --------------------
+        // elided
+        // --------------------
+        stash_3d(vec![&cube, &tank], &mut nnps);
+
+        apply_gravity(&cube.m, &mut cube.fx, &mut cube.fy, &mut cube.fz, 0.0, -9.81, 0.0);
+        linear_interparticle_force(
+            &cube.x, &cube.y, &cube.z,
+            &cube.u, &cube.v, &cube.w, &cube.rad,
+            &mut cube.fx, &mut cube.fy, &mut cube.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // elided
+    }
+}
+     #+END_SRC
+     One needs to be careful while applying the =linear_interparticle_force=,
+     since there could be a huge mismatch of variables while calling the
+     function (this has to be improved some way).
+
+     After computation of the forces, using the accelerations move the particles
+     to the next time step. This done by using some integrator such as Euler
+     integrator, RK2 or RK4 integrators. In the present example we use Euler
+     integrator. For every =struct= or =entity= we need to implement the
+     =EulerIntegrator= trait.
+
+     #+BEGIN_SRC rust
+use prestige::EulerIntegrator;
+
+fn main() {
+    while t < tf {
+        // elided
+        cube.euler_stage_1(dt);
+    }
+}
+     #+END_SRC
+     Remember that we need to bring in the =EulerIntegrator= trait to use the
+     =euler_stage_1= method on the =cube= (Basic =rust= rules).
+
+     Finally dump the data as
+
+     #+BEGIN_SRC rust
+use prestige::WriteOutput;
+
+fn main() {
+    while t < tf {
+        // elided
+        if step_no % pfreq == 0 {
+            cube.write_vtk(format!("{}/cube_{}.vtk", &dir_name, step_no));
+        }
+        step_no += 1;
+    }
+}
+     #+END_SRC
+     Just like the previous case remember to bring the =WriteOutput= trait to
+     call the =write_vtk= method on =cube=. And also note that we don't dump the
+     data at every time step, it is done only at some time steps, usually it is
+     fixed by the =pfreq= variable.
+
+     Let's put every thing in a single file and tangle it and then run.
+
+     #+NAME: code:sbb_full
+     #+BEGIN_SRC rust :tangle src/bin/sbb.rs :comments link
+extern crate indicatif;
+extern crate prestige;
+extern crate simple_shapes;
+
+// crates imports
+use prestige::{
+    contact_search::{stash_3d, WorldBounds, NNPS},
+    physics::rigid_body::{
+        equations::{apply_gravity, linear_interparticle_force},
+        RB3d,
+    },
+    EulerIntegrator, WriteOutput, setup_progress_bar,
+};
+
+// external crate imports
+use indicatif::{ProgressBar, ProgressStyle};
+use simple_shapes::{circle_2d, tank_2d};
+
+// std imports
+use std::fs;
+
+fn create_particles_sbb(spacing: f32) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    // fix the spacing between the particles
+    let layers = 1;
+    // create a tank with 26 cm length, 26 cm height
+    let (xt, yt) = tank_2d(0.0, 0.26, spacing, 0.0, 0.26, spacing, layers);
+    // create a cylinder in 2d (that would be a circle),
+    let diameter = 0.01; // in meters
+    let (xc, yc) = circle_2d((0.1, 0.1), diameter / 2., spacing);
+    (xt, yt, xc, yc)
+}
+
+fn create_entites(spacing: f32) -> (RB3d, RB3d){
+    let (xt, yt, xc, yc) = create_particles_sbb(spacing);
+    // create and setup cylinder
+    let mut cylinder = RB3d::from_xyr(xc.clone(), yc, vec![spacing / 2.; xc.len()]);
+    let cylinder_rho = 2700.;
+    let cylinder_m = cylinder_rho * spacing.powf(2.);
+    // set the mass
+    cylinder.m = vec![cylinder_m; cylinder.x.len()];
+    cylinder.nnps_idx = 0;
+    cylinder.initialize();
+
+    // create and setup tank
+    let mut tank = RB3d::from_xyr(xt.clone(), yt, vec![spacing / 2.; xt.len()]);
+    let tank_rho = 1051.;
+    let tank_m = tank_rho * spacing.powf(2.);
+
+    // set the mass
+    tank.m = vec![tank_m; tank.x.len()];
+    tank.nnps_idx = 1;
+    tank.initialize();
+
+    (cylinder, tank)
+}
+
+
+fn print_no_part(pars: Vec<&Vec<f32>>) {
+    let mut total_pars = 0;
+    for x in pars {
+        total_pars += x.len();
+    }
+    println!("Total particles {}", total_pars);
+}
+
+fn main() {
+    // The diameter of the cylinder is 1 cm, which is 0.01 m. Let's the spacing be
+    // 0.05 cm that would be 5 * 1e-5 m.
+    let spacing = 5. * 1e-5;
+    // dimension
+    let dim = 2;
+
+    // particles
+    let (mut cylinder, tank) = create_entites(spacing);
+
+    let kn = 1e5;
+
+    print_no_part(vec![&cylinder.x, &tank.x]);
+
+    // setup nnps
+    let world_bounds = WorldBounds::new(-0.01, 0.3, -0.01, 0.3, 0.0, 0.0, 2. * spacing);
+    let mut nnps = NNPS::new(2, &world_bounds, dim);
+
+    // solver data
+    let dt = 1e-4;
+    let mut t = 0.;
+    let tf = 1.;
+    let mut step_no = 0;
+    let pfreq = 100;
+
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let dir_name = project_root.to_owned() + "/sbb_1_output";
+    let _p = fs::create_dir(&dir_name);
+
+    // create a progress bar
+    let total_steps = (tf / dt) as u64;
+    let pb = setup_progress_bar(total_steps);
+    while t < tf {
+        // stash the particles into the world's cells
+        stash_3d(vec![&cylinder, &tank], &mut nnps);
+
+        apply_gravity(
+            &cylinder.m, &mut cylinder.fx, &mut cylinder.fy, &mut cylinder.fz,
+            0.0, -9.81, 0.0,
+        );
+        linear_interparticle_force(
+            &cylinder.x, &cylinder.y, &cylinder.z, &cylinder.u,
+            &cylinder.v, &cylinder.w, &cylinder.rad, &mut cylinder.fx,
+            &mut cylinder.fy, &mut cylinder.fz,
+
+            &tank.x, &tank.y, &tank.z, &tank.u,
+            &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps,
+            kn,
+            5.,
+        );
+
+        cylinder.euler_stage_1(dt);
+
+        if step_no % pfreq == 0 {
+            tank.write_vtk(format!("{}/tank_{}.vtk", &dir_name, step_no));
+            cylinder.write_vtk(format!("{}/cylinder_{}.vtk", &dir_name, step_no));
+        }
+        step_no += 1;
+        t += dt;
+
+        // progress bar increment
+        pb.inc(1);
+    }
+    pb.finish_with_message("Simulation succesfully completed");
+}
+     #+END_SRC
+
+
+
+**** TODO Three bouncing bodies (tbb)
+     As a second step in our approach on benchmarking the rigid body
+     implementation, we will now simulate a total of three cylinders falling
+     in a tank.
+
+     Just like the previous case the steps remain the same, except we need to
+     change some things to incorporate more cylinders and in the process we will
+     discuss the difficulties of the current approach in simulating many rigid
+     bodies and look at an alternative.
+
+     Alright
+     - Create particles
+
+     - Setup the initial conditions
+
+     - Create nnps
+
+     - Setup interaction equations
+
+     - Dump data
+
+     Full code is at ref:code:tbb_full. This time I will not be much
+     descriptive, will only explain the changes from the previous case.
+
+     Create a three cylinders, specification as in the table
+     ref:tbl:geometry_prameters_benchmark_1 and a tank.
+
+     #+NAME: code:create_particles_tbb
+     #+BEGIN_SRC rust
+use simple_shapes::{circle_2d, tank_2d};
+
+fn create_paricles_mmb(spacing: f32) -> (Vec<f32>, Vec<f32>,
+                                         Vec<f32>, Vec<f32>,
+                                         Vec<f32>, Vec<f32>,
+                                         Vec<f32>, Vec<f32>,) {
+    // fix the spacing between the particles
+    let layers = 1;
+    // create a tank with 26 cm length, 26 cm height
+    let (xt, yt) = tank_2d(0.0, 0.1, spacing, 0.0, 0.1, spacing, 1, false);
+    // create a cylinder in 2d (that would be a circle),
+    let diameter = 0.01; // in meters
+    let (xc1, yc1) = circle_2d((0.05, 0.03), diameter / 2., spacing);
+    let (xc2, yc2) = circle_2d((0.05, 0.07), diameter / 2., spacing);
+    let (xc3, yc3) = circle_2d((0.05, 0.1), diameter / 2., spacing);
+    (xt, yt, xc1, yc1, xc2, yc2, xc3, yc3)
+}
+     #+END_SRC
+
+     Please refer to the [[https://docs.rs/simple_shapes/][documentation]] for functions regarding the geometry
+     creation. Using the particle position information create the rigid body
+     entities and set the initial conditions.
+
+     #+BEGIN_SRC rust
+use prestige::physics::rigid_body::RB3d;
+
+fn create_entites(){
+    let spacing = 0.01;
+    let (xt, yt, xc, yc) = create_partices_ssb(0.01);
+    let mut cube1 = RB3d::from_xyr(xc1.clone(), yc1, vec![spacing/2.; xc1.len()]);
+    let mut cube2 = RB3d::from_xyr(xc2.clone(), yc2, vec![spacing/2.; xc2.len()]);
+    let mut cube3 = RB3d::from_xyr(xc3.clone(), yc3, vec![spacing/2.; xc3.len()]);
+    let mut tank = RB3d::from_xyr(xt.clone(), yt, vec![spacing/2.; xt.len()]);
+}
+     #+END_SRC
+
+     After creating entities we need to set it's initial conditions.
+
+     #+BEGIN_SRC rust
+fn create_entites(){
+    // elided
+    cube1.compute_total_mass();
+    cube1.compute_center_of_mass();
+    cube1.compute_moment_of_inertia();
+    cube1.save_initial_position_vectors();
+    cube2.compute_total_mass();
+    cube2.compute_center_of_mass();
+    cube2.compute_moment_of_inertia();
+    cube2.save_initial_position_vectors();
+    cube3.compute_total_mass();
+    cube3.compute_center_of_mass();
+    cube3.compute_moment_of_inertia();
+    cube3.save_initial_position_vectors();
+}
+     #+END_SRC
+
+     *note* that the order matters (they are interdependent), or in a single function
+
+     #+BEGIN_SRC rust
+fn create_entites(){
+    // elided
+    cube1.initialize();
+    cube2.initialize();
+    cube3.initialize();
+}
+     #+END_SRC
+     We can do the same for the tank, but tank doesn't move or is steady so we
+     don't care about its dynamics.
+
+     Setup nnps for neighbours. From the geometry of our simulation we know the
+     bounds of the world. Using that information create the bounds.
+
+     #+BEGIN_SRC rust
+use prestige::contact_search::{WorldBounds, NNPS}
+fn create_bounds(){
+    // setup nnps
+    // bodies out side the domain are no more considered for physics.
+    // in the current case tank will be the bound since no cylinder is allowed
+    // to go past the tank
+    // Using the tank bounds create the world
+    let world_bounds = WorldBounds::new(-0.01, 0.3, -0.01, 0.3, 0.0, 0.0, 0.001);
+    let mut nnps = NNPS::new(4, &world_bounds, dim);
+}
+     #+END_SRC
+     Here we have a total of four rigid bodies cube1, cube2, cube3 and tank,
+     which makes the first parameter of a function =NNPS::new()=.  For more
+     information please refer to the Prestige documentation regarding the
+     functionality of =Worldbounds= and =NNPS=.
+
+     Start the simulation
+
+     #+BEGIN_SRC rust
+fn main(){
+    // elided
+    let dt = 1e-4;
+    let mut t = 0.;
+    let tf = 1.;
+    while t < tf {
+        // --------------------
+        // elided
+        // --------------------
+        step_no += 1;
+        t += dt;
+    }
+}
+     #+END_SRC
+
+     Find forces in simulation loop due to its sources.  Here we will see too
+     much code addition. Since cube1 be influenced by all the other three other
+     objects, the same thing applies to other objects. Table
+     ref:tbl:cube_influence shows which body can potentially have interaction
+     with whom.
+
+     #+NAME:tbl:cube_influence
+     |--------+-------+-------+-------+------|
+     | Object | cube1 | cube2 | cube3 | tank |
+     |--------+-------+-------+-------+------|
+     | cube1  | No    | Yes   | Yes   | Yes  |
+     | cube2  | Yes   | No    | Yes   | Yes  |
+     | cube3  | Yes   | Yes   | No    | Yes  |
+     |--------+-------+-------+-------+------|
+
+
+     By following these rules we would end up a total of NINE equations.
+
+     #+BEGIN_SRC rust
+fn main(){
+    // elided
+    while t < tf {
+        // --------------------
+        // elided
+        // --------------------
+        stash_3d(vec![&cube, &tank], &mut nnps);
+
+        apply_gravity(&cube1.m, &mut cube1.fx, &mut cube1.fy, &mut cube1.fz, 0.0, -9.81, 0.0);
+        apply_gravity(&cube2.m, &mut cube2.fx, &mut cube2.fy, &mut cube2.fz, 0.0, -9.81, 0.0);
+        apply_gravity(&cube2.m, &mut cube3.fx, &mut cube3.fy, &mut cube3.fz, 0.0, -9.81, 0.0);
+
+        // ------------------------------------------
+        // forces on cube 1
+        // force on cube1 due to tank
+        linear_interparticle_force(
+            &cube1.x, &cube1.y, &cube1.z,
+            &cube1.u, &cube1.v, &cube1.w, &cube1.rad,
+            &mut cube1.fx, &mut cube1.fy, &mut cube1.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+
+        // force on cube1 due to cube 2
+        linear_interparticle_force(
+            &cube1.x, &cube1.y, &cube1.z,
+            &cube1.u, &cube1.v, &cube1.w, &cube1.rad,
+            &mut cube1.fx, &mut cube1.fy, &mut cube1.fz,
+
+            &cube2.x, &cube2.y, &cube2.z,
+            &cube2.u, &cube2.v, &cube2.w, &cube2.rad, cube2.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+
+        // force on cube1 due to cube 3
+        linear_interparticle_force(
+            &cube1.x, &cube1.y, &cube1.z,
+            &cube1.u, &cube1.v, &cube1.w, &cube1.rad,
+            &mut cube1.fx, &mut cube1.fy, &mut cube1.fz,
+
+            &cube3.x, &cube3.y, &cube3.z,
+            &cube3.u, &cube3.v, &cube3.w, &cube3.rad, cube3.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // ------------------------------------------
+
+        // ------------------------------------------
+        // force on cube2 due to tank
+        linear_interparticle_force(
+            &cube2.x, &cube2.y, &cube2.z,
+            &cube2.u, &cube2.v, &cube2.w, &cube2.rad,
+            &mut cube2.fx, &mut cube2.fy, &mut cube2.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cube2 due to cube 1
+        linear_interparticle_force(
+            &cube2.x, &cube2.y, &cube2.z,
+            &cube2.u, &cube2.v, &cube2.w, &cube2.rad,
+            &mut cube2.fx, &mut cube2.fy, &mut cube2.fz,
+
+            &cube1.x, &cube1.y, &cube1.z,
+            &cube1.u, &cube1.v, &cube1.w, &cube1.rad, cube1.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cube2 due to cube 3
+        linear_interparticle_force(
+            &cube2.x, &cube2.y, &cube2.z,
+            &cube2.u, &cube2.v, &cube2.w, &cube2.rad,
+            &mut cube2.fx, &mut cube2.fy, &mut cube2.fz,
+
+            &cube3.x, &cube3.y, &cube3.z,
+            &cube3.u, &cube3.v, &cube3.w, &cube3.rad, cube3.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // ------------------------------------------
+
+        // ------------------------------------------
+        // force on cube3 due to tank
+        linear_interparticle_force(
+            &cube3.x, &cube3.y, &cube3.z,
+            &cube3.u, &cube3.v, &cube3.w, &cube3.rad,
+            &mut cube3.fx, &mut cube3.fy, &mut cube3.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cube3 due to cube 1
+        linear_interparticle_force(
+            &cube3.x, &cube3.y, &cube3.z,
+            &cube3.u, &cube3.v, &cube3.w, &cube3.rad,
+            &mut cube3.fx, &mut cube3.fy, &mut cube3.fz,
+
+            &cube1.x, &cube1.y, &cube1.z,
+            &cube1.u, &cube1.v, &cube1.w, &cube1.rad, cube1.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cube3 due to cube 2
+        linear_interparticle_force(
+            &cube3.x, &cube3.y, &cube3.z,
+            &cube3.u, &cube3.v, &cube3.w, &cube3.rad,
+            &mut cube3.fx, &mut cube3.fy, &mut cube3.fz,
+
+            &cube2.x, &cube2.y, &cube2.z,
+            &cube2.u, &cube2.v, &cube2.w, &cube2.rad, cube2.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+    }
+}
+     #+END_SRC
+
+     Let's put every thing in a single file and tangle it and then run.
+
+     #+NAME: code:tbb_full
+     #+BEGIN_SRC rust :tangle src/bin/tbb.rs :comments link
+extern crate prestige;
+extern crate simple_shapes;
+
+// crates imports
+use prestige::{
+    contact_search::{stash_3d, WorldBounds, NNPS},
+    physics::rigid_body::{
+        equations::{apply_gravity, linear_interparticle_force},
+        RB3d,
+    },
+    EulerIntegrator, WriteOutput, setup_progress_bar,
+};
+
+// external crate imports
+use simple_shapes::{circle_2d, tank_2d};
+
+// std imports
+use std::fs;
+
+fn create_particles_tbb(spacing: f32) -> (Vec<f32>, Vec<f32>,
+                                          Vec<f32>, Vec<f32>,
+                                         Vec<f32>, Vec<f32>,
+                                         Vec<f32>, Vec<f32>,) {
+    // fix the spacing between the particles
+    let layers = 3;
+    // create a tank with 26 cm length, 26 cm height
+    let (xt, yt) = tank_2d(0.0, 0.1, spacing, 0.0, 0.1, spacing, layers);
+    // create a cylinder in 2d (that would be a circle),
+    let diameter = 0.01; // in meters
+    let (xc1, yc1) = circle_2d((0.05, 0.03), diameter / 2., spacing);
+    let (xc2, yc2) = circle_2d((0.05, 0.07), diameter / 2., spacing);
+    let (xc3, yc3) = circle_2d((0.05, 0.1), diameter / 2., spacing);
+    (xt, yt, xc1, yc1, xc2, yc2, xc3, yc3)
+}
+
+
+fn create_entites(spacing: f32) -> (RB3d, RB3d, RB3d, RB3d){
+    let (xt, yt, xc1, yc1, xc2, yc2, xc3, yc3) = create_particles_tbb(spacing);
+    // create and setup cylinders
+    let mut cylinder1 = RB3d::from_xyr(xc1.clone(), yc1, vec![spacing/2.; xc1.len()]);
+    let mut cylinder2 = RB3d::from_xyr(xc2.clone(), yc2, vec![spacing/2.; xc2.len()]);
+    let mut cylinder3 = RB3d::from_xyr(xc3.clone(), yc3, vec![spacing/2.; xc3.len()]);
+    let cylinder_rho = 2700.;
+    let cylinder_m = cylinder_rho * spacing.powf(2.);
+    // set the mass
+    cylinder1.m = vec![cylinder_m; cylinder1.x.len()];
+    cylinder1.nnps_idx = 0;
+    cylinder1.initialize();
+    cylinder2.m = vec![cylinder_m; cylinder2.x.len()];
+    cylinder2.nnps_idx = 1;
+    cylinder2.initialize();
+    cylinder3.m = vec![cylinder_m; cylinder3.x.len()];
+    cylinder3.nnps_idx = 2;
+    cylinder3.initialize();
+
+    // create and setup tank
+    let mut tank = RB3d::from_xyr(xt.clone(), yt, vec![spacing / 2.; xt.len()]);
+    let tank_rho = 1051.;
+    let tank_m = tank_rho * spacing.powf(2.);
+
+    // set the mass
+    tank.m = vec![tank_m; tank.x.len()];
+    tank.nnps_idx = 3;
+    tank.initialize();
+
+    (cylinder1, cylinder2, cylinder3, tank)
+}
+
+
+fn print_no_part(pars: Vec<&Vec<f32>>) {
+    let mut total_pars = 0;
+    for x in pars {
+        total_pars += x.len();
+    }
+    println!("Total particles {}", total_pars);
+}
+
+fn main() {
+    // The diameter of the cylinder is 1 cm, which is 0.01 m. Let's the spacing be
+    // 0.05 cm that would be 5 * 1e-5 m.
+    let spacing = 5. * 1e-5;
+    // dimension
+    let dim = 2;
+
+    // particles
+    let (mut cylinder1, mut cylinder2, mut cylinder3, tank) = create_entites(spacing);
+
+    let kn = 1e5;
+
+    print_no_part(vec![&cylinder1.x, &cylinder2.x, &cylinder3.x, &tank.x]);
+
+    // setup nnps
+    let world_bounds = WorldBounds::new(-0.01, 0.11, -0.01, 0.11, 0.0, 0.0, 2. * spacing);
+    let mut nnps = NNPS::new(4, &world_bounds, dim);
+
+    // solver data
+    let dt = 1e-4;
+    let mut t = 0.;
+    let tf = 1.;
+    let mut step_no = 0;
+    let pfreq = 100;
+
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let dir_name = project_root.to_owned() + "/tbb_1_output";
+    let _p = fs::create_dir(&dir_name);
+
+    // create a progress bar
+    let total_steps = (tf / dt) as u64;
+    let pb = setup_progress_bar(total_steps);
+    while t < tf {
+        // stash the particles into the world's cells
+        stash_3d(vec![&cylinder1, &cylinder2, &cylinder3, &tank], &mut nnps);
+
+        apply_gravity(
+            &cylinder1.m, &mut cylinder1.fx, &mut cylinder1.fy, &mut cylinder1.fz,
+            0.0, -9.81, 0.0,
+        );
+        apply_gravity(
+            &cylinder2.m, &mut cylinder2.fx, &mut cylinder2.fy, &mut cylinder2.fz,
+            0.0, -9.81, 0.0,
+        );
+        apply_gravity(
+            &cylinder3.m, &mut cylinder3.fx, &mut cylinder3.fy, &mut cylinder3.fz,
+            0.0, -9.81, 0.0,
+        );
+
+        linear_interparticle_force(
+            &cylinder1.x, &cylinder1.y, &cylinder1.z,
+            &cylinder1.u, &cylinder1.v, &cylinder1.w, &cylinder1.rad,
+            &mut cylinder1.fx, &mut cylinder1.fy, &mut cylinder1.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+
+        // force on cylinder1 due to cylinder 2
+        linear_interparticle_force(
+            &cylinder1.x, &cylinder1.y, &cylinder1.z,
+            &cylinder1.u, &cylinder1.v, &cylinder1.w, &cylinder1.rad,
+            &mut cylinder1.fx, &mut cylinder1.fy, &mut cylinder1.fz,
+
+            &cylinder2.x, &cylinder2.y, &cylinder2.z,
+            &cylinder2.u, &cylinder2.v, &cylinder2.w, &cylinder2.rad, cylinder2.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+
+        // force on cylinder1 due to cylinder 3
+        linear_interparticle_force(
+            &cylinder1.x, &cylinder1.y, &cylinder1.z,
+            &cylinder1.u, &cylinder1.v, &cylinder1.w, &cylinder1.rad,
+            &mut cylinder1.fx, &mut cylinder1.fy, &mut cylinder1.fz,
+
+            &cylinder3.x, &cylinder3.y, &cylinder3.z,
+            &cylinder3.u, &cylinder3.v, &cylinder3.w, &cylinder3.rad, cylinder3.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // ------------------------------------------
+
+        // ------------------------------------------
+        // force on cylinder2 due to tank
+        linear_interparticle_force(
+            &cylinder2.x, &cylinder2.y, &cylinder2.z,
+            &cylinder2.u, &cylinder2.v, &cylinder2.w, &cylinder2.rad,
+            &mut cylinder2.fx, &mut cylinder2.fy, &mut cylinder2.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cylinder2 due to cylinder 1
+        linear_interparticle_force(
+            &cylinder2.x, &cylinder2.y, &cylinder2.z,
+            &cylinder2.u, &cylinder2.v, &cylinder2.w, &cylinder2.rad,
+            &mut cylinder2.fx, &mut cylinder2.fy, &mut cylinder2.fz,
+
+            &cylinder1.x, &cylinder1.y, &cylinder1.z,
+            &cylinder1.u, &cylinder1.v, &cylinder1.w, &cylinder1.rad, cylinder1.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cylinder2 due to cylinder 3
+        linear_interparticle_force(
+            &cylinder2.x, &cylinder2.y, &cylinder2.z,
+            &cylinder2.u, &cylinder2.v, &cylinder2.w, &cylinder2.rad,
+            &mut cylinder2.fx, &mut cylinder2.fy, &mut cylinder2.fz,
+
+            &cylinder3.x, &cylinder3.y, &cylinder3.z,
+            &cylinder3.u, &cylinder3.v, &cylinder3.w, &cylinder3.rad, cylinder3.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // ------------------------------------------
+
+        // ------------------------------------------
+        // force on cylinder3 due to tank
+        linear_interparticle_force(
+            &cylinder3.x, &cylinder3.y, &cylinder3.z,
+            &cylinder3.u, &cylinder3.v, &cylinder3.w, &cylinder3.rad,
+            &mut cylinder3.fx, &mut cylinder3.fy, &mut cylinder3.fz,
+
+            &tank.x, &tank.y, &tank.z,
+            &tank.u, &tank.v, &tank.w, &tank.rad, tank.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cylinder3 due to cylinder 1
+        linear_interparticle_force(
+            &cylinder3.x, &cylinder3.y, &cylinder3.z,
+            &cylinder3.u, &cylinder3.v, &cylinder3.w, &cylinder3.rad,
+            &mut cylinder3.fx, &mut cylinder3.fy, &mut cylinder3.fz,
+
+            &cylinder1.x, &cylinder1.y, &cylinder1.z,
+            &cylinder1.u, &cylinder1.v, &cylinder1.w, &cylinder1.rad, cylinder1.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+        // force on cylinder3 due to cylinder 2
+        linear_interparticle_force(
+            &cylinder3.x, &cylinder3.y, &cylinder3.z,
+            &cylinder3.u, &cylinder3.v, &cylinder3.w, &cylinder3.rad,
+            &mut cylinder3.fx, &mut cylinder3.fy, &mut cylinder3.fz,
+
+            &cylinder2.x, &cylinder2.y, &cylinder2.z,
+            &cylinder2.u, &cylinder2.v, &cylinder2.w, &cylinder2.rad, cylinder2.nnps_idx,
+
+            &nnps, kn, 5.
+        );
+
+
+        cylinder1.euler_stage_1(dt);
+        cylinder2.euler_stage_1(dt);
+        cylinder3.euler_stage_1(dt);
+
+        if step_no % pfreq == 0 {
+            tank.write_vtk(format!("{}/tank_{}.vtk", &dir_name, step_no));
+            cylinder1.write_vtk(format!("{}/cylinder1_{}.vtk", &dir_name, step_no));
+            cylinder2.write_vtk(format!("{}/cylinder2_{}.vtk", &dir_name, step_no));
+            cylinder3.write_vtk(format!("{}/cylinder3_{}.vtk", &dir_name, step_no));
+        }
+        step_no += 1;
+        t += dt;
+
+        // progress bar increment
+        pb.inc(1);
+    }
+    pb.finish_with_message("Simulation succesfully completed");
+}
+     #+END_SRC
+
+
+
+
+* Prestige manual
+
+** Entity creation
+
+*** Clean condition
+    label:sec:clean_condition
+
+    We mainly use two methods while creating the entity. One is =from_xyzr= and
+    =from_xyr=, =r= changes depending on the physics. To make sure our
+    simulation works fine, we need to make sure that some properties of the
+    entity are not zero, such as mass, smoothing length, total mass etc. One
+    should make sure that these properties are properly set before proceeding
+    for the physics.
+
+
+
+* Bibliography
+  bibliography:~/Dropbox/Research/references.bib
+  bibliographystyle:unsrt

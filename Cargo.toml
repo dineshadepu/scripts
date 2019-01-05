@@ -6,3 +6,7 @@ edition = "2018"
 
 [dependencies]
 prestige = {path = "../prestige"}
+simple_shapes = {path = "../simple_shapes"}
+indicatif = "0.10.1"
+quicli = "0.4"
+structopt = "0.2"

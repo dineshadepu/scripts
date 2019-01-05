@@ -1,5 +1,22 @@
 #+startup: hideblocks
 #+startup: overview
+#+TITLE: Prestige user manual and scripts
+#+AUTHOR: Dinesh A
+#+LANGUAGE: en
+#+TEXINFO_DIR_CATEGORY: Emacs
+#+TEXINFO_DIR_DESC: Usage of prestige package
+
+#+BEGIN_QUOTE
+Are you watching closely? -- The Prestige.
+#+END_QUOTE
+* Table of Contents                                            :noexport:TOC:
+- [[#rigid-bodies][Rigid bodies]]
+  - [[#theory][Theory]]
+  - [[#benchmark-1][Benchmark 1]]
+- [[#prestige-manual][Prestige manual]]
+  - [[#entity-creation][Entity creation]]
+- [[#bibliography][Bibliography]]
+
 * Rigid bodies
 
 ** Theory

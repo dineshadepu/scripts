@@ -25,7 +25,7 @@ fn create_particles_tbb(spacing: f32) -> (Vec<f32>, Vec<f32>,
     // fix the spacing between the particles
     let layers = 3;
     // create a tank with 26 cm length, 26 cm height
-    let (xt, yt) = tank_2d(0.0, 0.1, spacing, 0.0, 0.1, spacing, layers);
+    let (xt, yt) = tank_2d(0.0, 0.1, spacing, 0.0, 0.1, spacing, layers, true);
     // create a cylinder in 2d (that would be a circle),
     let diameter = 0.01; // in meters
     let (xc1, yc1) = circle_2d((0.05, 0.03), diameter / 2., spacing);
